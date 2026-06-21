@@ -1,0 +1,10 @@
+[
+  {
+    "question": "What is nutrition?",
+    "expected_behavior": "Should explain nutrition clearly using only provided context."
+  },
+  {
+    "question": "What is saprotrophic nutrition?",
+    "expected_behavior": "Should explain saprotrophic nutrition correctly using context only."
+  }
+]
