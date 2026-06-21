@@ -1,1 +1,60 @@
-name: placeholder
+name: Langfuse Evals Pipeline
+
+on:
+  push:
+    paths:
+      - 'prompts/**'
+      - 'configs/**'
+      - 'datasets/**'
+
+jobs:
+  test-dify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Call Dify API
+        env:
+          DIFY_API_KEY: ${{ secrets.DIFY_API_KEY }}
+        run: |
+          python - <<EOF
+          import json
+          import requests
+
+          with open("datasets/golden_dataset.json", "r") as f:
+              dataset = json.load(f)
+
+          question = dataset[0]["question"]
+          print("Question:", question)
+
+          headers = {
+              "Authorization": f"Bearer $DIFY_API_KEY",
+              "Content-Type": "application/json"
+          }
+
+          payload = {
+              "inputs": {},
+              "query": question,
+              "response_mode": "blocking",
+              "user": "ci-test"
+          }
+
+          response = requests.post(
+              "https://api.dify.ai/v1/chat-messages",
+              headers=headers,
+              json=payload
+          )
+
+          print("Status Code:", response.status_code)
+          print("Response:", response.text)
+          EOF
