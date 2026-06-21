@@ -15,10 +15,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install requests
@@ -27,34 +28,64 @@ jobs:
         env:
           DIFY_API_KEY: ${{ secrets.DIFY_API_KEY }}
         run: |
-          python - <<EOF
-          import json
-          import requests
+          python - <<'EOF'
+import json
+import requests
+import os
+import sys
 
-          with open("datasets/golden_dataset.json", "r") as f:
-              dataset = json.load(f)
+# Load golden dataset
+try:
+    with open("datasets/golden_dataset.json", "r") as f:
+        dataset = json.load(f)
+    
+    if not dataset:
+        print("❌ Dataset is empty")
+        sys.exit(1)
+        
+    question = dataset[0].get("question")
+    expected_answer = dataset[0].get("answer", "")
+    print("🔍 Testing question:", question)
+    
+except Exception as e:
+    print(f"❌ Failed to load dataset: {e}")
+    sys.exit(1)
 
-          question = dataset[0]["question"]
-          print("Question:", question)
+# Prepare headers
+headers = {
+    "Authorization": f"Bearer {os.getenv('DIFY_API_KEY')}",
+    "Content-Type": "application/json"
+}
 
-          headers = {
-              "Authorization": f"Bearer $DIFY_API_KEY",
-              "Content-Type": "application/json"
-          }
+payload = {
+    "inputs": {},
+    "query": question,
+    "response_mode": "blocking",
+    "user": "ci-test"
+}
 
-          payload = {
-              "inputs": {},
-              "query": question,
-              "response_mode": "blocking",
-              "user": "ci-test"
-          }
-
-          response = requests.post(
-              "https://api.dify.ai/v1/chat-messages",
-              headers=headers,
-              json=payload
-          )
-
-          print("Status Code:", response.status_code)
-          print("Response:", response.text)
-          EOF
+try:
+    response = requests.post(
+        "https://api.dify.ai/v1/chat-messages",
+        headers=headers,
+        json=payload,
+        timeout=60
+    )
+    
+    print("📡 Status Code:", response.status_code)
+    
+    if response.status_code != 200:
+        print("❌ API Error:", response.text)
+        sys.exit(1)
+    
+    result = response.json()
+    answer = result.get("answer", "")
+    print("✅ Dify Response received")
+    print("📝 Answer:", answer[:500] + "..." if len(answer) > 500 else answer)
+    
+    # TODO: Add Langfuse evaluation here later
+    
+except requests.exceptions.RequestException as e:
+    print(f"❌ Request failed: {e}")
+    sys.exit(1)
+EOF
