@@ -1,10 +1,10 @@
 [
   {
-    "question": "What is nutrition?",
+    "question": "What is saprotrophic nutrition?",
     "expected_answer": "Saprotrophic nutrition is a mode of heterotrophic nutrition where an organism feeds on dead decaying matter where by they absorb solutions from this dead decaying matter."
   },
   {
-    "question": "What is saprotrophic nutrition?",
+    "question": "What is nutrition?",
     "expected_answer": "Nutrition refers to the process by which living organisms obtain, consume and use food substances to maintain their life processes."
   }
 ]
