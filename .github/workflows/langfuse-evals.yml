@@ -4,13 +4,15 @@ on:
   push:
     branches: [ main ]
   pull_request:
+    branches: [ main ]
 
 jobs:
   evaluate:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -20,7 +22,7 @@ jobs:
     - name: Install dependencies
       run: pip install requests pyyaml
 
-    - name: Run Dify Evaluation
+    - name: Run Dify RAG Evaluation
       env:
         DIFY_API_KEY: ${{ secrets.DIFY_API_KEY }}
       run: |
@@ -34,6 +36,7 @@ jobs:
         # ==================== CONFIG ====================
         CONFIG_PATH = "configs/thresholds.yaml"
         DATASET_PATH = "datasets/golden_dataset.json"
+        SYSTEM_PROMPT_PATH = "prompts/system-prompt.txt"
 
         # Load threshold
         try:
@@ -44,4 +47,82 @@ jobs:
         except Exception as e:
             print(f"❌ Failed to load threshold: {e}")
             sys.exit(1)
+
+        # Load golden dataset
+        try:
+            with open(DATASET_PATH, "r") as f:
+                dataset = json.load(f)
+            print(f"✅ Loaded {len(dataset)} evaluation examples")
+        except Exception as e:
+            print(f"❌ Failed to load dataset: {e}")
+            sys.exit(1)
+
+        # Load system prompt (optional)
+        system_prompt = ""
+        try:
+            with open(SYSTEM_PROMPT_PATH, "r") as f:
+                system_prompt = f.read().strip()
+            print("✅ Loaded system prompt")
+        except:
+            print("⚠️ No system prompt found, continuing without it")
+
+        # ==================== EVALUATION ====================
+        passed = 0
+        total = len(dataset)
+
+        for i, item in enumerate(dataset):
+            question = item.get("question", "")
+            expected = item.get("expected_answer", "")
+            
+            if not question or not expected:
+                print(f"⚠️ Skipping invalid item {i+1}")
+                continue
+
+            try:
+                # Call Dify Chat API
+                payload = {
+                    "inputs": {"system_prompt": system_prompt} if system_prompt else {},
+                    "query": question,
+                    "response_mode": "blocking",
+                    "user": f"eval-{i}"
+                }
+
+                response = requests.post(
+                    "https://api.dify.ai/v1/chat-messages",
+                    headers={
+                        "Authorization": f"Bearer {os.getenv('DIFY_API_KEY')}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload,
+                    timeout=90
+                )
+                
+                response.raise_for_status()
+                result = response.json()
+                generated = result.get("answer", "").strip()
+
+                # TODO: Replace this placeholder with real evaluation
+                # For now using simple length + keyword match as dummy score
+                score = 0.5
+                if len(generated) > 50 and any(word in generated.lower() for word in expected.lower().split()[:5]):
+                    score = 0.9
+
+                passed += 1 if score >= threshold else 0
+                status = "✅ PASS" if score >= threshold else "❌ FAIL"
+                print(f"Example {i+1}/{total}: Score={score:.2f} {status}")
+                print(f"   Q: {question[:80]}...")
+                print(f"   A: {generated[:100]}...\n")
+
+            except Exception as e:
+                print(f"❌ Error on example {i+1}: {str(e)[:150]}")
+
+        # Final result
+        pass_rate = (passed / total * 100) if total > 0 else 0
+        print(f"\n🎯 FINAL PASS RATE: {pass_rate:.1f}% ({passed}/{total})")
+
+        if pass_rate < 80:
+            print("❌ Pipeline failed - pass rate too low")
+            sys.exit(1)
+        else:
+            print("✅ Evaluation pipeline passed!")
         EOF
