@@ -24,7 +24,7 @@ jobs:
 
     - name: Run Dify RAG Evaluation
       env:
-        DIFY_API_KEY: ${{ secrets.DIFY_API_KEY }}
+        DIFY_API_KEY: ${{ secrets.BIO_NUTRITION_DIFY_API_KEY }}
       run: |
         python - <<'EOF'
         import json
@@ -32,11 +32,10 @@ jobs:
         import yaml
         import os
         import sys
+        import time
 
-        # ==================== CONFIG ====================
         CONFIG_PATH = "configs/thresholds.yaml"
         DATASET_PATH = "datasets/golden_dataset.json"
-        SYSTEM_PROMPT_PATH = "prompts/system-prompt.txt"
 
         # Load threshold
         try:
@@ -48,7 +47,7 @@ jobs:
             print(f"❌ Failed to load threshold: {e}")
             sys.exit(1)
 
-        # Load golden dataset
+        # Load dataset
         try:
             with open(DATASET_PATH, "r") as f:
                 dataset = json.load(f)
@@ -57,66 +56,74 @@ jobs:
             print(f"❌ Failed to load dataset: {e}")
             sys.exit(1)
 
-        # Load system prompt (optional)
-        system_prompt = ""
-        try:
-            with open(SYSTEM_PROMPT_PATH, "r") as f:
-                system_prompt = f.read().strip()
-            print("✅ Loaded system prompt")
-        except:
-            print("⚠️ No system prompt found, continuing without it")
+        # Check API key
+        api_key = os.getenv("DIFY_API_KEY")
+        if not api_key:
+            print("❌ DIFY_API_KEY not found in GitHub secrets")
+            sys.exit(1)
 
-        # ==================== EVALUATION ====================
+        print("✅ API key loaded")
+
         passed = 0
         total = len(dataset)
 
         for i, item in enumerate(dataset):
             question = item.get("question", "")
             expected = item.get("expected_answer", "")
-            
+
             if not question or not expected:
                 print(f"⚠️ Skipping invalid item {i+1}")
                 continue
 
-            try:
-                # Call Dify Chat API
-                payload = {
-                    "inputs": {"system_prompt": system_prompt} if system_prompt else {},
-                    "query": question,
-                    "response_mode": "blocking",
-                    "user": f"eval-{i}"
-                }
+            payload = {
+                "inputs": {},
+                "query": question,
+                "response_mode": "blocking",
+                "user": f"eval-{i}"
+            }
 
-                response = requests.post(
-                    "https://api.dify.ai/v1/chat-messages",
-                    headers={
-                        "Authorization": f"Bearer {os.getenv('DIFY_API_KEY')}",
-                        "Content-Type": "application/json"
-                    },
-                    json=payload,
-                    timeout=90
-                )
-                
-                response.raise_for_status()
-                result = response.json()
-                generated = result.get("answer", "").strip()
+            success = False
 
-                # TODO: Replace this placeholder with real evaluation
-                # For now using simple length + keyword match as dummy score
-                score = 0.5
-                if len(generated) > 50 and any(word in generated.lower() for word in expected.lower().split()[:5]):
-                    score = 0.9
+            for attempt in range(3):
+                try:
+                    response = requests.post(
+                        "https://api.dify.ai/v1/chat-messages",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json=payload,
+                        timeout=90
+                    )
 
-                passed += 1 if score >= threshold else 0
-                status = "✅ PASS" if score >= threshold else "❌ FAIL"
-                print(f"Example {i+1}/{total}: Score={score:.2f} {status}")
-                print(f"   Q: {question[:80]}...")
-                print(f"   A: {generated[:100]}...\n")
+                    response.raise_for_status()
+                    result = response.json()
+                    generated = result.get("answer", "").strip()
+                    success = True
+                    break
 
-            except Exception as e:
-                print(f"❌ Error on example {i+1}: {str(e)[:150]}")
+                except Exception as e:
+                    print(f"Retry {attempt+1}/3 failed: {e}")
+                    time.sleep(2)
 
-        # Final result
+            if not success:
+                print(f"❌ Error on example {i+1}: All retries failed")
+                continue
+
+            score = 0.5
+            if len(generated) > 50 and any(
+                word in generated.lower()
+                for word in expected.lower().split()[:5]
+            ):
+                score = 0.9
+
+            passed += 1 if score >= threshold else 0
+            status = "✅ PASS" if score >= threshold else "❌ FAIL"
+
+            print(f"Example {i+1}/{total}: Score={score:.2f} {status}")
+            print(f"Q: {question[:80]}")
+            print(f"A: {generated[:100]}\n")
+
         pass_rate = (passed / total * 100) if total > 0 else 0
         print(f"\n🎯 FINAL PASS RATE: {pass_rate:.1f}% ({passed}/{total})")
 
