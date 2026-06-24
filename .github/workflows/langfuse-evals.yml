@@ -78,7 +78,7 @@ jobs:
             payload = {
                 "inputs": {},
                 "query": question,
-                "response_mode": "blocking",
+                "response_mode": "streaming",
                 "user": f"eval-{i}"
             }
 
