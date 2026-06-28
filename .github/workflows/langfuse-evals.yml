@@ -66,7 +66,7 @@ jobs:
             sys.exit(1)
         print("Dify API key loaded")
 
-        # Init Langfuse (always uses cloud.langfuse.com)
+        # Init Langfuse
         try:
             langfuse = Langfuse(
                 public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
@@ -91,7 +91,7 @@ jobs:
                 continue
 
             # Create a Langfuse trace for this question
-            trace = langfuse.trace(
+            trace = langfuse.create_trace(
                 name="rag-eval",
                 input={"question": question},
                 metadata={"expected_answer": expected},
@@ -153,7 +153,7 @@ jobs:
             if not success:
                 print(f"Example {i+1}: all retries failed")
                 trace.update(output={"error": "all retries failed"}, level="ERROR")
-                langfuse.score(
+                langfuse.create_score(
                     trace_id=trace.id,
                     name="hallucination_score",
                     value=0.0,
@@ -173,7 +173,7 @@ jobs:
             ):
                 score = 0.9
 
-            langfuse.score(
+            langfuse.create_score(
                 trace_id=trace.id,
                 name="hallucination_score",
                 value=score,
@@ -192,7 +192,7 @@ jobs:
         print(f"Threshold                   : {threshold}")
 
         # Log summary trace to Langfuse
-        summary_trace = langfuse.trace(
+        summary_trace = langfuse.create_trace(
             name="rag-eval-summary",
             input={"total_questions": total},
             output={
@@ -202,7 +202,7 @@ jobs:
             },
             tags=["ci-eval", "summary"],
         )
-        langfuse.score(
+        langfuse.create_score(
             trace_id=summary_trace.id,
             name="avg_hallucination_score",
             value=avg_score,
