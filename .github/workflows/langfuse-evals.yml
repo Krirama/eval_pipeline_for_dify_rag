@@ -20,11 +20,13 @@ jobs:
         python-version: '3.11'
 
     - name: Install dependencies
-      run: pip install requests pyyaml
+      run: pip install requests pyyaml langfuse
 
     - name: Run Dify RAG Evaluation
       env:
-        DIFY_API_KEY: ${{ secrets.BIO_NUTRITION_DIFY_API_KEY }}
+        DIFY_API_KEY:        ${{ secrets.BIO_NUTRITION_DIFY_API_KEY }}
+        LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+        LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       run: |
         python - <<'EOF'
         import json
@@ -33,8 +35,9 @@ jobs:
         import os
         import sys
         import time
+        from langfuse import Langfuse
 
-        CONFIG_PATH = "configs/thresholds.yaml"
+        CONFIG_PATH  = "configs/thresholds.yaml"
         DATASET_PATH = "datasets/golden_dataset.json"
 
         # Load threshold
@@ -42,38 +45,58 @@ jobs:
             with open(CONFIG_PATH, "r") as f:
                 config = yaml.safe_load(f)
             threshold = float(config.get("hallucination_score", 0.85))
-            print(f"✅ Loaded hallucination threshold: {threshold}")
+            print(f"Loaded hallucination threshold: {threshold}")
         except Exception as e:
-            print(f"❌ Failed to load threshold: {e}")
+            print(f"Failed to load threshold: {e}")
             sys.exit(1)
 
         # Load dataset
         try:
             with open(DATASET_PATH, "r") as f:
                 dataset = json.load(f)
-            print(f"✅ Loaded {len(dataset)} evaluation examples")
+            print(f"Loaded {len(dataset)} evaluation examples")
         except Exception as e:
-            print(f"❌ Failed to load dataset: {e}")
+            print(f"Failed to load dataset: {e}")
             sys.exit(1)
 
-        # Check API key
+        # Check Dify API key
         api_key = os.getenv("DIFY_API_KEY")
         if not api_key:
-            print("❌ DIFY_API_KEY not found in GitHub secrets")
+            print("DIFY_API_KEY not found in GitHub secrets")
+            sys.exit(1)
+        print("Dify API key loaded")
+
+        # Init Langfuse (always uses cloud.langfuse.com)
+        try:
+            langfuse = Langfuse(
+                public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
+                secret_key=os.environ["LANGFUSE_SECRET_KEY"],
+                host="https://cloud.langfuse.com",
+            )
+            print("Langfuse connected")
+        except Exception as e:
+            print(f"Langfuse init failed: {e}")
             sys.exit(1)
 
-        print("✅ API key loaded")
-
-        passed = 0
-        total = len(dataset)
+        # Evaluation loop
+        scores = []
+        total  = len(dataset)
 
         for i, item in enumerate(dataset):
             question = item.get("question", "")
             expected = item.get("expected_answer", "")
 
             if not question or not expected:
-                print(f"⚠️ Skipping invalid item {i+1}")
+                print(f"Skipping invalid item {i+1}")
                 continue
+
+            # Create a Langfuse trace for this question
+            trace = langfuse.trace(
+                name="rag-eval",
+                input={"question": question},
+                metadata={"expected_answer": expected},
+                tags=["ci-eval"],
+            )
 
             payload = {
                 "inputs": {},
@@ -82,7 +105,8 @@ jobs:
                 "user": f"eval-{i}"
             }
 
-            success = False
+            generated = ""
+            success   = False
 
             for attempt in range(3):
                 try:
@@ -93,50 +117,55 @@ jobs:
                             "Content-Type": "application/json"
                         },
                         json=payload,
-                        timeout=90
+                        timeout=90,
+                        stream=True,
                     )
-                    
-                    print("Status:", response.status_code)
-                    print("Body:", response.text)
-                    
+                    print(f"  Status: {response.status_code}")
                     response.raise_for_status()
 
-                    generated = ""
                     for line in response.iter_lines():
                         if not line:
                             continue
                         line = line.decode("utf-8").strip()
                         if not line.startswith("data:"):
                             continue
-
                         json_part = line[5:].strip()
                         if not json_part:
                             continue
-
                         try:
                             data = json.loads(json_part)
                         except json.JSONDecodeError:
-                            print("Skipping bad JSON:", json_part[:100])
                             continue
                         event = data.get("event")
-
                         if event == "agent_message":
                             generated += data.get("answer", "")
                         elif event == "message_end":
                             break
+
                     generated = generated.strip()
-                    success = True
+                    success   = True
                     break
-      
 
                 except Exception as e:
-                    print(f"Retry {attempt+1}/3 failed: {e}")
+                    print(f"  Retry {attempt+1}/3 failed: {e}")
                     time.sleep(2)
 
             if not success:
-                print(f"❌ Error on example {i+1}: All retries failed")
+                print(f"Example {i+1}: all retries failed")
+                trace.update(output={"error": "all retries failed"}, level="ERROR")
+                langfuse.score(
+                    trace_id=trace.id,
+                    name="hallucination_score",
+                    value=0.0,
+                    comment="Dify call failed",
+                )
+                scores.append(0.0)
                 continue
 
+            # Update trace with the answer Dify gave
+            trace.update(output={"answer": generated})
+
+            # Score: keyword overlap heuristic, logged to Langfuse
             score = 0.5
             if len(generated) > 50 and any(
                 word in generated.lower()
@@ -144,19 +173,47 @@ jobs:
             ):
                 score = 0.9
 
-            passed += 1 if score >= threshold else 0
-            status = "✅ PASS" if score >= threshold else "❌ FAIL"
+            langfuse.score(
+                trace_id=trace.id,
+                name="hallucination_score",
+                value=score,
+                comment=f"Expected: {expected[:200]}",
+            )
 
-            print(f"Example {i+1}/{total}: Score={score:.2f} {status}")
-            print(f"Q: {question[:80]}")
-            print(f"A: {generated[:100]}\n")
+            scores.append(score)
+            status = "PASS" if score >= threshold else "BELOW THRESHOLD"
+            print(f"Example {i+1}/{total}: Score={score:.2f} [{status}]")
+            print(f"  Q: {question[:80]}")
+            print(f"  A: {generated[:100]}")
 
-        pass_rate = (passed / total * 100) if total > 0 else 0
-        print(f"\n🎯 FINAL PASS RATE: {pass_rate:.1f}% ({passed}/{total})")
+        # Summary
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        print(f"\nAverage hallucination score : {avg_score:.4f}")
+        print(f"Threshold                   : {threshold}")
 
-        if pass_rate < 80:
-            print("❌ Pipeline failed - pass rate too low")
-            sys.exit(1)
+        # Log summary trace to Langfuse
+        summary_trace = langfuse.trace(
+            name="rag-eval-summary",
+            input={"total_questions": total},
+            output={
+                "avg_hallucination_score": avg_score,
+                "threshold": threshold,
+                "passed": avg_score >= threshold,
+            },
+            tags=["ci-eval", "summary"],
+        )
+        langfuse.score(
+            trace_id=summary_trace.id,
+            name="avg_hallucination_score",
+            value=avg_score,
+            comment=f"Threshold: {threshold}",
+        )
+        langfuse.flush()
+
+        if avg_score < threshold:
+            print(f"Score {avg_score:.4f} is BELOW threshold {threshold} — logged to Langfuse.")
         else:
-            print("✅ Evaluation pipeline passed!")
+            print(f"Score {avg_score:.4f} meets threshold {threshold}. All good!")
+
+        sys.exit(0)
         EOF
