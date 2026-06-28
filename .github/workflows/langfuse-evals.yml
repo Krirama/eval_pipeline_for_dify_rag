@@ -20,7 +20,7 @@ jobs:
         python-version: '3.11'
 
     - name: Install dependencies
-      run: pip install requests pyyaml langfuse
+      run: pip install requests pyyaml "langfuse==2.60.0"
 
     - name: Run Dify RAG Evaluation
       env:
@@ -66,7 +66,7 @@ jobs:
             sys.exit(1)
         print("Dify API key loaded")
 
-        # Init Langfuse
+        # Init Langfuse v2
         try:
             langfuse = Langfuse(
                 public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
@@ -90,8 +90,8 @@ jobs:
                 print(f"Skipping invalid item {i+1}")
                 continue
 
-            # Create a Langfuse trace for this question
-            trace = langfuse.create_trace(
+            # Create a Langfuse trace for this question (v2 API)
+            trace = langfuse.trace(
                 name="rag-eval",
                 input={"question": question},
                 metadata={"expected_answer": expected},
@@ -152,8 +152,8 @@ jobs:
 
             if not success:
                 print(f"Example {i+1}: all retries failed")
-                trace.update(output={"error": "all retries failed"}, level="ERROR")
-                langfuse.create_score(
+                trace.update(output={"error": "all retries failed"})
+                langfuse.score(
                     trace_id=trace.id,
                     name="hallucination_score",
                     value=0.0,
@@ -162,10 +162,10 @@ jobs:
                 scores.append(0.0)
                 continue
 
-            # Update trace with the answer Dify gave
+            # Update trace with Dify's answer
             trace.update(output={"answer": generated})
 
-            # Score: keyword overlap heuristic, logged to Langfuse
+            # Keyword-overlap score, logged to Langfuse
             score = 0.5
             if len(generated) > 50 and any(
                 word in generated.lower()
@@ -173,7 +173,7 @@ jobs:
             ):
                 score = 0.9
 
-            langfuse.create_score(
+            langfuse.score(
                 trace_id=trace.id,
                 name="hallucination_score",
                 value=score,
@@ -192,7 +192,7 @@ jobs:
         print(f"Threshold                   : {threshold}")
 
         # Log summary trace to Langfuse
-        summary_trace = langfuse.create_trace(
+        summary_trace = langfuse.trace(
             name="rag-eval-summary",
             input={"total_questions": total},
             output={
@@ -202,7 +202,7 @@ jobs:
             },
             tags=["ci-eval", "summary"],
         )
-        langfuse.create_score(
+        langfuse.score(
             trace_id=summary_trace.id,
             name="avg_hallucination_score",
             value=avg_score,
